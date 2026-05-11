@@ -8,17 +8,17 @@ local Players           = game:GetService("Players")
 local GD = require(ReplicatedStorage.Shared.GameData)
 
 -- Physics collision groups
-local GROUP_BANDA   = "Banda"
+local GROUP_BAND   = "Band"
 local GROUP_PLAYERS = "Players"
-local GROUP_CUBURI  = "Cuburi"
+local GROUP_CUBES  = "Cubes"
 
 local function setupPhysics()
-	pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_BANDA)   end)
-	pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_PLAYERS) end)
-	pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_CUBURI)  end)
-	PhysicsService:CollisionGroupSetCollidable(GROUP_BANDA,   GROUP_PLAYERS, false)
-	PhysicsService:CollisionGroupSetCollidable(GROUP_CUBURI,  GROUP_PLAYERS, false)
-	PhysicsService:CollisionGroupSetCollidable(GROUP_BANDA,   GROUP_CUBURI,  true)
+    pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_BAND)   end)
+    pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_PLAYERS) end)
+    pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_CUBES)  end)
+    PhysicsService:CollisionGroupSetCollidable(GROUP_BAND,   GROUP_PLAYERS, false)
+    PhysicsService:CollisionGroupSetCollidable(GROUP_CUBES,  GROUP_PLAYERS, false)
+    PhysicsService:CollisionGroupSetCollidable(GROUP_BAND,   GROUP_CUBES,  true)
 end
 setupPhysics()
 
@@ -31,26 +31,26 @@ local REBIRTH_BONUS_COINS  = GD.REBIRTH_BONUS_COINS
 local REBIRTH_REQUIREMENTS = GD.REBIRTH_REQUIREMENTS
 
 local function getRebirthLuck(rebirthLevel)
-	return GD.getRebirthLuck(rebirthLevel)
+    return GD.getRebirthLuck(rebirthLevel)
 end
 
 local function getCashMultiplier(rebirthLevel)
-	return GD.getCashMultiplier(rebirthLevel)
+    return GD.getCashMultiplier(rebirthLevel)
 end
 
 local function getTotalSlots(player, rebirthLevel)
-	return GD.getTotalSlots(rebirthLevel, player:GetAttribute("HasBP_ExtraSlots"))
+    return GD.getTotalSlots(rebirthLevel, player:GetAttribute("HasBP_ExtraSlots"))
 end
 
 -- Remote events
 
 local function createEvent(name, className)
-	local existing = ReplicatedStorage:FindFirstChild(name)
-	if existing then return existing end
-	local event    = Instance.new(className or "RemoteEvent")
-	event.Name     = name
-	event.Parent   = ReplicatedStorage
-	return event
+    local existing = ReplicatedStorage:FindFirstChild(name)
+    if existing then return existing end
+    local event    = Instance.new(className or "RemoteEvent")
+    event.Name     = name
+    event.Parent   = ReplicatedStorage
+    return event
 end
 
 createEvent("MoveToSlotEvent")
@@ -65,9 +65,9 @@ createEvent("CharacterSeenEvent")
 
 local rebirthInfoEvent = ReplicatedStorage:FindFirstChild("RebirthInfoEvent")
 if not rebirthInfoEvent then
-	rebirthInfoEvent        = Instance.new("RemoteFunction")
-	rebirthInfoEvent.Name   = "RebirthInfoEvent"
-	rebirthInfoEvent.Parent = ReplicatedStorage
+    rebirthInfoEvent        = Instance.new("RemoteFunction")
+    rebirthInfoEvent.Name   = "RebirthInfoEvent"
+    rebirthInfoEvent.Parent = ReplicatedStorage
 end
 
 print("[MoneyManager] Remote events ready")
@@ -78,42 +78,42 @@ local assignedSpawners = {}
 local MAX_SPAWNERS     = 6
 
 local function assignSpawnerToPlayer(player)
-	for i = 1, MAX_SPAWNERS do
-		local taken = false
-		for _, num in pairs(assignedSpawners) do
-			if num == i then taken = true; break end
-		end
-		if not taken then
-			assignedSpawners[player.UserId] = i
-			player:SetAttribute("SpawnerNumber", i)
-			print("[MoneyManager] " .. player.Name .. " -> SpawnerPlayer" .. i)
-			return i
-		end
-	end
-	warn("[MoneyManager] No spawner available for " .. player.Name)
-	return nil
+    for i = 1, MAX_SPAWNERS do
+        local taken = false
+        for _, num in pairs(assignedSpawners) do
+            if num == i then taken = true; break end
+        end
+        if not taken then
+            assignedSpawners[player.UserId] = i
+            player:SetAttribute("SpawnerNumber", i)
+            print("[MoneyManager] " .. player.Name .. " -> SpawnerPlayer" .. i)
+            return i
+        end
+    end
+    warn("[MoneyManager] No spawner available for " .. player.Name)
+    return nil
 end
 
 -- Player helpers
 
 local function getPlayerBasePlateau(player)
-	local pNum          = player:GetAttribute("SpawnerNumber") or 1
-	local spawnerFolder = workspace:FindFirstChild("SpawnerPlayer" .. pNum)
-	if not spawnerFolder then return nil end
-	return spawnerFolder:FindFirstChild("BasePlateau" .. pNum)
+    local pNum          = player:GetAttribute("SpawnerNumber") or 1
+    local spawnerFolder = workspace:FindFirstChild("SpawnerPlayer" .. pNum)
+    if not spawnerFolder then return nil end
+    return spawnerFolder:FindFirstChild("BasePlateau" .. pNum)
 end
 
 local function applyBaseColor(player)
-	local rebirthLvl = 0
-	if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
-		rebirthLvl = player.leaderstats.Rebirths.Value
-	end
-	local colorLevel = player:GetAttribute("SelectedBaseTheme") or rebirthLvl
-	local bp = getPlayerBasePlateau(player)
-	if bp then
-		bp.Color    = ANIME_BASE_COLORS[colorLevel] or Color3.fromRGB(108, 59, 245)
-		bp.Material = Enum.Material.SmoothPlastic
-	end
+    local rebirthLvl = 0
+    if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
+        rebirthLvl = player.leaderstats.Rebirths.Value
+    end
+    local colorLevel = player:GetAttribute("SelectedBaseTheme") or rebirthLvl
+    local bp = getPlayerBasePlateau(player)
+    if bp then
+        bp.Color    = ANIME_BASE_COLORS[colorLevel] or Color3.fromRGB(108, 59, 245)
+        bp.Material = Enum.Material.SmoothPlastic
+    end
 end
 
 -- Server luck
@@ -121,125 +121,131 @@ end
 -- All luck changes go through recalculatePersonalLuck -> updateServerLuck,
 -- so there is only one place where ServerLuck is written.
 local function updateServerLuck()
-	local players = Players:GetPlayers()
-	if #players == 0 then
-		workspace:SetAttribute("ServerLuck", 1)
-		return
-	end
-	local total = 0
-	for _, p in ipairs(players) do
-		total = total + (p:GetAttribute("PersonalLuck") or 1)
-	end
-	local avg = total / #players
-	workspace:SetAttribute("ServerLuck", math.max(1, math.sqrt(avg)))
+    local players = Players:GetPlayers()
+    if #players == 0 then
+        workspace:SetAttribute("ServerLuck", 1)
+        return
+    end
+    local total = 0
+    for _, p in ipairs(players) do
+        total = total + (p:GetAttribute("PersonalLuck") or 1)
+    end
+    local avg = total / #players
+    workspace:SetAttribute("ServerLuck", math.max(1, math.sqrt(avg)))
 end
 
 -- Personal luck
 -- Called whenever anything that affects luck changes (rebirth, BP, VIP, potions, index).
 local function recalculatePersonalLuck(player)
-	local rebirthLevel = 0
-	if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
-		rebirthLevel = player.leaderstats.Rebirths.Value
-	end
+    local rebirthLevel = 0
+    if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
+        rebirthLevel = player.leaderstats.Rebirths.Value
+    end
 
-	local rebirthLuck  = getRebirthLuck(rebirthLevel)
-	local indexLuck    = player:GetAttribute("IndexLuck")    or 0
-	local premiumLuck  = player:GetAttribute("PremiumLuck")  or 0
+    local rebirthLuck  = getRebirthLuck(rebirthLevel)
+    local indexLuck    = player:GetAttribute("IndexLuck")    or 0
+    local premiumLuck  = player:GetAttribute("PremiumLuck")  or 0
 
-	-- Potion luck with diminishing returns above the soft cap.
-	-- Players below SOFT_CAP get the full bonus; above it, each doubling of
-	-- base luck halves the effective potion gain to keep things balanced.
-	local potionLuck    = 0
-	local potionLuckExp = player:GetAttribute("PotionLuckExpire") or 0
-	if os.time() < potionLuckExp then
-		local rawPotionLuck    = player:GetAttribute("PotionLuck") or 0
-		local baseLuckNoPot    = 1 + rebirthLuck + indexLuck + premiumLuck
-		local SOFT_CAP         = 8
-		local diminish         = math.min(1, SOFT_CAP / math.max(SOFT_CAP, baseLuckNoPot))
-		potionLuck             = rawPotionLuck * diminish
-	end
+    -- Potion luck with diminishing returns above the soft cap.
+    -- Players below SOFT_CAP get the full bonus; above it, each doubling of
+    -- base luck halves the effective potion gain to keep things balanced.
+    local potionLuck    = 0
+    local potionLuckExp = player:GetAttribute("PotionLuckExpire") or 0
+    if os.time() < potionLuckExp then
+        local rawPotionLuck    = player:GetAttribute("PotionLuck") or 0
+        local baseLuckNoPot    = 1 + rebirthLuck + indexLuck + premiumLuck
+        local SOFT_CAP         = 8
+        local diminish         = math.min(1, SOFT_CAP / math.max(SOFT_CAP, baseLuckNoPot))
+        potionLuck             = rawPotionLuck * diminish
+    end
 
-	local baseLuck = 1 + rebirthLuck + indexLuck + premiumLuck + potionLuck
+    local baseLuck = 1 + rebirthLuck + indexLuck + premiumLuck + potionLuck
 
-	if player:GetAttribute("HasBP_x2Luck") then baseLuck = baseLuck * 2   end
-	if player:GetAttribute("IsVIP")        then baseLuck = baseLuck * 1.1 end
+    if player:GetAttribute("HasBP_x2Luck") then baseLuck = baseLuck * 2   end
+    if player:GetAttribute("IsVIP")        then baseLuck = baseLuck * 1.1 end
 
-	player:SetAttribute("PersonalLuck",  baseLuck)
-	player:SetAttribute("RebirthLuck",   rebirthLuck)
-	updateServerLuck()
-	return baseLuck
+    player:SetAttribute("PersonalLuck",  baseLuck)
+    player:SetAttribute("RebirthLuck",   rebirthLuck)
+    updateServerLuck()
+    return baseLuck
 end
 
 -- Character counting (used by rebirth requirement checks)
 local function countAllCharactersForRebirth(player)
-	local counts      = {}
-	local basePlateau = getPlayerBasePlateau(player)
+    local counts      = {}
+    local basePlateau = getPlayerBasePlateau(player)
 
-	if basePlateau then
-		for _, slot in pairs(basePlateau:GetChildren()) do
-			if slot.Name:match("^Slot%d+$") then
-				for _, child in pairs(slot:GetChildren()) do
-					if child:IsA("BasePart") and child.Name == "PlacedCharacter" then
-						local cName = child:GetAttribute("CharacterName") or ""
-						counts[cName] = (counts[cName] or 0) + 1
-					end
-				end
-			end
-		end
-	end
+    if basePlateau then
+        for _, slot in pairs(basePlateau:GetChildren()) do
+            if slot.Name:match("^Slot%d+$") then
+                for _, child in pairs(slot:GetChildren()) do
+                    if child:IsA("BasePart") and child.Name == "PlacedCharacter" then
+                        local cName = child:GetAttribute("CharacterName") or ""
+                        counts[cName] = (counts[cName] or 0) + 1
+                    end
+                end
+            end
+        end
+    end
 
-	local inventory = player:FindFirstChild("Inventory")
-	if inventory then
-		local storageFolder = inventory:FindFirstChild("Storage")
-		if storageFolder then
-			for _, child in pairs(storageFolder:GetChildren()) do
-				if child:IsA("BasePart") then
-					local cName = child:GetAttribute("CharacterName") or ""
-					counts[cName] = (counts[cName] or 0) + 1
-				end
-			end
-		end
-	end
+    local inventory = player:FindFirstChild("Inventory")
+    if inventory then
+        local storageFolder = inventory:FindFirstChild("Storage")
+        if storageFolder then
+            for _, child in pairs(storageFolder:GetChildren()) do
+                if child:IsA("BasePart") then
+                    local cName = child:GetAttribute("CharacterName") or ""
+                    counts[cName] = (counts[cName] or 0) + 1
+                end
+            end
+        end
+    end
 
-	return counts
+    return counts
 end
 
 -- Character serialization (used by rebirth SaveAll perk)
 local function saveCharacterData(child)
-	local data = {
-		CharacterName = child:GetAttribute("CharacterName"),
-		Rarity        = child:GetAttribute("Rarity"),
-		PassiveIncome = child:GetAttribute("BasePassiveIncome") or child:GetAttribute("PassiveIncome") or 0,
-		Price         = child:GetAttribute("Price"),
-		Anime         = child:GetAttribute("Anime"),
-		Stars         = child:GetAttribute("Stars") or 1,
-		IsLocked      = child:GetAttribute("IsLocked")    == true,
-		IsProtected   = child:GetAttribute("IsProtected") == true,
-		Size          = {child.Size.X,  child.Size.Y,  child.Size.Z},
-		Color         = {child.Color.R, child.Color.G, child.Color.B},
-		Material      = child.Material.Name,
-		Transparency  = child.Transparency,
-		Shape         = child.Shape.Name,
-	}
+    local data = {
+        CharacterName = child:GetAttribute("CharacterName"),
+        Rarity        = child:GetAttribute("Rarity"),
+        PassiveIncome = child:GetAttribute("BasePassiveIncome") or child:GetAttribute("PassiveIncome") or 0,
+        Price         = child:GetAttribute("Price"),
+        Anime         = child:GetAttribute("Anime"),
+        Stars         = child:GetAttribute("Stars") or 1,
+        IsLocked      = child:GetAttribute("IsLocked")    == true,
+        IsProtected   = child:GetAttribute("IsProtected") == true,
+        Size          = {child.Size.X,  child.Size.Y,  child.Size.Z},
+        Color         = {child.Color.R, child.Color.G, child.Color.B},
+        Material      = child.Material.Name,
+        Transparency  = child.Transparency,
+        Shape         = child.Shape.Name,
+    }
 
-	local mesh = child:FindFirstChildOfClass("SpecialMesh")
-	if mesh then
-		data.MeshId    = mesh.MeshId
-		data.TextureId = mesh.TextureId
-		data.MeshScale = {mesh.Scale.X, mesh.Scale.Y, mesh.Scale.Z}
-		data.MeshType  = mesh.MeshType.Name
-	end
+    local mesh = child:FindFirstChildOfClass("SpecialMesh")
+    if mesh then
+        data.MeshId    = mesh.MeshId
+        data.TextureId = mesh.TextureId
+        data.MeshScale = {mesh.Scale.X, mesh.Scale.Y, mesh.Scale.Z}
+        data.MeshType  = mesh.MeshType.Name
+    end
 
-	local decals = {}
-	for _, d in pairs(child:GetChildren()) do
-		if d:IsA("Decal") or d:IsA("Texture") then
-			table.insert(decals, {ClassName=d.ClassName, Face=d.Face.Name, Texture=d.Texture})
-		end
-	end
-	if #decals > 0 then data.Decals = decals end
+    local decals = {}
+    for _, d in pairs(child:GetChildren()) do
+        if d:IsA("Decal") or d:IsA("Texture") then
+            table.insert(decals, {ClassName=d.ClassName, Face=d.Face.Name, Texture=d.Texture})
+        end
+    end
+    if #decals > 0 then data.Decals = decals end
 
-	return data
+    return data
 end
+
+-- ServerLuck is initialized here; all updates go through recalculatePersonalLuck -> updateServerLuck.
+-- There is no separate polling loop to avoid two systems overwriting each other.
+workspace:SetAttribute("ServerLuck", 1)
+
+print("[MoneyManager] Loaded")
 
 local function restoreCharacterToStorage(stor, charData)
 	local char      = Instance.new("Part")
