@@ -21,4 +21,4 @@ This project was built to practice large-scale gameplay systems, server authorit
 Place the module in `ServerScriptService` and require it:
 
 ```lua
-local DataStoreHandler = require(game.ServerScriptService.src.DataStoreHandler)
+local DataStoreHandler = require(game.ServerScriptService.src.MoneyManager)
