@@ -1,5 +1,4 @@
--- MoneyManager (ServerScriptService)
--- Handles economy, passive income, rebirths, spawner assignment,
+-- handles economy, passive income, rebirths, spawner assignment,
 -- steal system, base themes and server luck calculation.
 
 local PhysicsService    = game:GetService("PhysicsService")
@@ -7,22 +6,22 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players           = game:GetService("Players")
 local GD = require(ReplicatedStorage.Shared.GameData)
 
--- Physics collision groups
-local GROUP_BAND   = "Band"
+-- physics collision groups
+
+local GROUP_BAND    = "Band"
 local GROUP_PLAYERS = "Players"
-local GROUP_CUBES  = "Cubes"
+local GROUP_CUBES   = "Cubes"
 
-local function setupPhysics()
-    pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_BAND)   end)
-    pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_PLAYERS) end)
-    pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_CUBES)  end)
-    PhysicsService:CollisionGroupSetCollidable(GROUP_BAND,   GROUP_PLAYERS, false)
-    PhysicsService:CollisionGroupSetCollidable(GROUP_CUBES,  GROUP_PLAYERS, false)
-    PhysicsService:CollisionGroupSetCollidable(GROUP_BAND,   GROUP_CUBES,  true)
+local function setup_physics()
+	pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_BAND)    end)
+	pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_PLAYERS) end)
+	pcall(function() PhysicsService:RegisterCollisionGroup(GROUP_CUBES)   end)
+	PhysicsService:CollisionGroupSetCollidable(GROUP_BAND,   GROUP_PLAYERS, false)
+	PhysicsService:CollisionGroupSetCollidable(GROUP_CUBES,  GROUP_PLAYERS, false)
+	PhysicsService:CollisionGroupSetCollidable(GROUP_BAND,   GROUP_CUBES,  true)
 end
-setupPhysics()
+setup_physics()
 
--- Aliases to shared game data (all balance constants live in GameData.luau)
 local formatNumber         = GD.formatNumber
 local ANIME_BASE_COLORS    = GD.ANIME_BASE_COLORS
 local STORAGE_PER_REBIRTH  = GD.STORAGE_PER_REBIRTH
@@ -30,369 +29,302 @@ local REBIRTH_COINS_COST   = GD.REBIRTH_COINS_COST
 local REBIRTH_BONUS_COINS  = GD.REBIRTH_BONUS_COINS
 local REBIRTH_REQUIREMENTS = GD.REBIRTH_REQUIREMENTS
 
-local function getRebirthLuck(rebirthLevel)
-    return GD.getRebirthLuck(rebirthLevel)
+local function get_rebirth_luck(level)    return GD.getRebirthLuck(level)              end
+local function get_cash_multiplier(level) return GD.getCashMultiplier(level)            end
+local function get_total_slots(player, level)
+	return GD.getTotalSlots(level, player:GetAttribute("HasBP_ExtraSlots"))
 end
 
-local function getCashMultiplier(rebirthLevel)
-    return GD.getCashMultiplier(rebirthLevel)
+-- remote events
+
+local function create_event(name, class)
+	local existing = ReplicatedStorage:FindFirstChild(name)
+	if existing then return existing end
+	local event = Instance.new(class or "RemoteEvent")
+	event.Name   = name
+	event.Parent = ReplicatedStorage
+	return event
 end
 
-local function getTotalSlots(player, rebirthLevel)
-    return GD.getTotalSlots(rebirthLevel, player:GetAttribute("HasBP_ExtraSlots"))
-end
+create_event("MoveToSlotEvent")
+create_event("MoveToStorageEvent")
+create_event("SellFromInventoryEvent")
+create_event("CharacterSeenEvent")
 
--- Remote events
-
-local function createEvent(name, className)
-    local existing = ReplicatedStorage:FindFirstChild(name)
-    if existing then return existing end
-    local event    = Instance.new(className or "RemoteEvent")
-    event.Name     = name
-    event.Parent   = ReplicatedStorage
-    return event
-end
-
-createEvent("MoveToSlotEvent")
-createEvent("MoveToStorageEvent")
-createEvent("SellFromInventoryEvent")
-
-local notifyEvent      = createEvent("NotifyEvent")
-local rebirthEvent     = createEvent("RebirthEvent")
-local changeThemeEvent = createEvent("ChangeBaseThemeEvent")
-local purchaseEvent    = createEvent("PurchaseEvent")
-createEvent("CharacterSeenEvent")
+local notifyEvent      = create_event("NotifyEvent")
+local rebirthEvent     = create_event("RebirthEvent")
+local changeThemeEvent = create_event("ChangeBaseThemeEvent")
+local purchaseEvent    = create_event("PurchaseEvent")
+local protectCharEvent = create_event("ProtectCharacterEvent")
+local indexCollectEvent = create_event("IndexCollectEvent")
 
 local rebirthInfoEvent = ReplicatedStorage:FindFirstChild("RebirthInfoEvent")
 if not rebirthInfoEvent then
-    rebirthInfoEvent        = Instance.new("RemoteFunction")
-    rebirthInfoEvent.Name   = "RebirthInfoEvent"
-    rebirthInfoEvent.Parent = ReplicatedStorage
+	rebirthInfoEvent        = Instance.new("RemoteFunction")
+	rebirthInfoEvent.Name   = "RebirthInfoEvent"
+	rebirthInfoEvent.Parent = ReplicatedStorage
 end
 
-print("[MoneyManager] Remote events ready")
+-- spawner assignment
 
--- Spawner assignment
+local assigned_spawners = {}
+local MAX_SPAWNERS = 6
 
-local assignedSpawners = {}
-local MAX_SPAWNERS     = 6
-
-local function assignSpawnerToPlayer(player)
-    for i = 1, MAX_SPAWNERS do
-        local taken = false
-        for _, num in pairs(assignedSpawners) do
-            if num == i then taken = true; break end
-        end
-        if not taken then
-            assignedSpawners[player.UserId] = i
-            player:SetAttribute("SpawnerNumber", i)
-            print("[MoneyManager] " .. player.Name .. " -> SpawnerPlayer" .. i)
-            return i
-        end
-    end
-    warn("[MoneyManager] No spawner available for " .. player.Name)
-    return nil
+local function assign_spawner(player)
+	for i = 1, MAX_SPAWNERS do
+		local taken = false
+		for _, num in pairs(assigned_spawners) do
+			if num == i then taken = true; break end
+		end
+		if not taken then
+			assigned_spawners[player.UserId] = i
+			player:SetAttribute("SpawnerNumber", i)
+			print("[MoneyManager] " .. player.Name .. " -> SpawnerPlayer" .. i)
+			return i
+		end
+	end
+	warn("[MoneyManager] No spawner available for " .. player.Name)
+	return nil
 end
 
--- Player helpers
+-- player helpers
 
-local function getPlayerBasePlateau(player)
-    local pNum          = player:GetAttribute("SpawnerNumber") or 1
-    local spawnerFolder = workspace:FindFirstChild("SpawnerPlayer" .. pNum)
-    if not spawnerFolder then return nil end
-    return spawnerFolder:FindFirstChild("BasePlateau" .. pNum)
+local function get_base_plateau(player)
+	local pn = player:GetAttribute("SpawnerNumber") or 1
+	local folder = workspace:FindFirstChild("SpawnerPlayer" .. pn)
+	if not folder then return nil end
+	return folder:FindFirstChild("BasePlateau" .. pn)
 end
 
-local function applyBaseColor(player)
-    local rebirthLvl = 0
-    if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
-        rebirthLvl = player.leaderstats.Rebirths.Value
-    end
-    local colorLevel = player:GetAttribute("SelectedBaseTheme") or rebirthLvl
-    local bp = getPlayerBasePlateau(player)
-    if bp then
-        bp.Color    = ANIME_BASE_COLORS[colorLevel] or Color3.fromRGB(108, 59, 245)
-        bp.Material = Enum.Material.SmoothPlastic
-    end
+local function apply_base_color(player)
+	local level = 0
+	if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
+		level = player.leaderstats.Rebirths.Value
+	end
+	local color_level = player:GetAttribute("SelectedBaseTheme") or level
+	local bp = get_base_plateau(player)
+	if bp then
+		bp.Color    = ANIME_BASE_COLORS[color_level] or Color3.fromRGB(108, 59, 245)
+		bp.Material = Enum.Material.SmoothPlastic
+	end
 end
 
--- Server luck
--- Uses sqrt dampening so one maxed-out player doesn't trivialize the whole server.
--- All luck changes go through recalculatePersonalLuck -> updateServerLuck,
--- so there is only one place where ServerLuck is written.
-local function updateServerLuck()
-    local players = Players:GetPlayers()
-    if #players == 0 then
-        workspace:SetAttribute("ServerLuck", 1)
-        return
-    end
-    local total = 0
-    for _, p in ipairs(players) do
-        total = total + (p:GetAttribute("PersonalLuck") or 1)
-    end
-    local avg = total / #players
-    workspace:SetAttribute("ServerLuck", math.max(1, math.sqrt(avg)))
+-- server luck
+
+local function update_server_luck()
+	local players = Players:GetPlayers()
+	if #players == 0 then workspace:SetAttribute("ServerLuck", 1); return end
+	local total = 0
+	for _, p in ipairs(players) do
+		total = total + (p:GetAttribute("PersonalLuck") or 1)
+	end
+	workspace:SetAttribute("ServerLuck", math.max(1, math.sqrt(total / #players)))
 end
 
--- Personal luck
--- Called whenever anything that affects luck changes (rebirth, BP, VIP, potions, index).
-local function recalculatePersonalLuck(player)
-    local rebirthLevel = 0
-    if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
-        rebirthLevel = player.leaderstats.Rebirths.Value
-    end
-
-    local rebirthLuck  = getRebirthLuck(rebirthLevel)
-    local indexLuck    = player:GetAttribute("IndexLuck")    or 0
-    local premiumLuck  = player:GetAttribute("PremiumLuck")  or 0
-
-    -- Potion luck with diminishing returns above the soft cap.
-    -- Players below SOFT_CAP get the full bonus; above it, each doubling of
-    -- base luck halves the effective potion gain to keep things balanced.
-    local potionLuck    = 0
-    local potionLuckExp = player:GetAttribute("PotionLuckExpire") or 0
-    if os.time() < potionLuckExp then
-        local rawPotionLuck    = player:GetAttribute("PotionLuck") or 0
-        local baseLuckNoPot    = 1 + rebirthLuck + indexLuck + premiumLuck
-        local SOFT_CAP         = 8
-        local diminish         = math.min(1, SOFT_CAP / math.max(SOFT_CAP, baseLuckNoPot))
-        potionLuck             = rawPotionLuck * diminish
-    end
-
-    local baseLuck = 1 + rebirthLuck + indexLuck + premiumLuck + potionLuck
-
-    if player:GetAttribute("HasBP_x2Luck") then baseLuck = baseLuck * 2   end
-    if player:GetAttribute("IsVIP")        then baseLuck = baseLuck * 1.1 end
-
-    player:SetAttribute("PersonalLuck",  baseLuck)
-    player:SetAttribute("RebirthLuck",   rebirthLuck)
-    updateServerLuck()
-    return baseLuck
+local function recalculate_personal_luck(player)
+	local level = 0
+	if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Rebirths") then
+		level = player.leaderstats.Rebirths.Value
+	end
+	local rebirth_luck = get_rebirth_luck(level)
+	local index_luck   = player:GetAttribute("IndexLuck")   or 0
+	local premium_luck = player:GetAttribute("PremiumLuck") or 0
+	local potion_luck  = 0
+	local potion_exp   = player:GetAttribute("PotionLuckExpire") or 0
+	if os.time() < potion_exp then
+		local raw        = player:GetAttribute("PotionLuck") or 0
+		local base_no_pot = 1 + rebirth_luck + index_luck + premium_luck
+		local SOFT_CAP   = 8
+		local diminish   = math.min(1, SOFT_CAP / math.max(SOFT_CAP, base_no_pot))
+		potion_luck      = raw * diminish
+	end
+	local luck = 1 + rebirth_luck + index_luck + premium_luck + potion_luck
+	if player:GetAttribute("HasBP_x2Luck") then luck = luck * 2   end
+	if player:GetAttribute("IsVIP")        then luck = luck * 1.1 end
+	player:SetAttribute("PersonalLuck",  luck)
+	player:SetAttribute("RebirthLuck",   rebirth_luck)
+	update_server_luck()
+	return luck
 end
 
--- Character counting (used by rebirth requirement checks)
-local function countAllCharactersForRebirth(player)
-    local counts      = {}
-    local basePlateau = getPlayerBasePlateau(player)
+-- character counting
 
-    if basePlateau then
-        for _, slot in pairs(basePlateau:GetChildren()) do
-            if slot.Name:match("^Slot%d+$") then
-                for _, child in pairs(slot:GetChildren()) do
-                    if child:IsA("BasePart") and child.Name == "PlacedCharacter" then
-                        local cName = child:GetAttribute("CharacterName") or ""
-                        counts[cName] = (counts[cName] or 0) + 1
-                    end
-                end
-            end
-        end
-    end
-
-    local inventory = player:FindFirstChild("Inventory")
-    if inventory then
-        local storageFolder = inventory:FindFirstChild("Storage")
-        if storageFolder then
-            for _, child in pairs(storageFolder:GetChildren()) do
-                if child:IsA("BasePart") then
-                    local cName = child:GetAttribute("CharacterName") or ""
-                    counts[cName] = (counts[cName] or 0) + 1
-                end
-            end
-        end
-    end
-
-    return counts
+local function count_all_characters(player)
+	local counts = {}
+	local bp = get_base_plateau(player)
+	if bp then
+		for _, slot in pairs(bp:GetChildren()) do
+			if slot.Name:match("^Slot%d+$") then
+				for _, child in pairs(slot:GetChildren()) do
+					if child:IsA("BasePart") and child.Name == "PlacedCharacter" then
+						local n = child:GetAttribute("CharacterName") or ""
+						counts[n] = (counts[n] or 0) + 1
+					end
+				end
+			end
+		end
+	end
+	local inv = player:FindFirstChild("Inventory")
+	if inv then
+		local stor = inv:FindFirstChild("Storage")
+		if stor then
+			for _, child in pairs(stor:GetChildren()) do
+				if child:IsA("BasePart") then
+					local n = child:GetAttribute("CharacterName") or ""
+					counts[n] = (counts[n] or 0) + 1
+				end
+			end
+		end
+	end
+	return counts
 end
 
--- Character serialization (used by rebirth SaveAll perk)
-local function saveCharacterData(child)
-    local data = {
-        CharacterName = child:GetAttribute("CharacterName"),
-        Rarity        = child:GetAttribute("Rarity"),
-        PassiveIncome = child:GetAttribute("BasePassiveIncome") or child:GetAttribute("PassiveIncome") or 0,
-        Price         = child:GetAttribute("Price"),
-        Anime         = child:GetAttribute("Anime"),
-        Stars         = child:GetAttribute("Stars") or 1,
-        IsLocked      = child:GetAttribute("IsLocked")    == true,
-        IsProtected   = child:GetAttribute("IsProtected") == true,
-        Size          = {child.Size.X,  child.Size.Y,  child.Size.Z},
-        Color         = {child.Color.R, child.Color.G, child.Color.B},
-        Material      = child.Material.Name,
-        Transparency  = child.Transparency,
-        Shape         = child.Shape.Name,
-    }
+-- character serialization
 
-    local mesh = child:FindFirstChildOfClass("SpecialMesh")
-    if mesh then
-        data.MeshId    = mesh.MeshId
-        data.TextureId = mesh.TextureId
-        data.MeshScale = {mesh.Scale.X, mesh.Scale.Y, mesh.Scale.Z}
-        data.MeshType  = mesh.MeshType.Name
-    end
-
-    local decals = {}
-    for _, d in pairs(child:GetChildren()) do
-        if d:IsA("Decal") or d:IsA("Texture") then
-            table.insert(decals, {ClassName=d.ClassName, Face=d.Face.Name, Texture=d.Texture})
-        end
-    end
-    if #decals > 0 then data.Decals = decals end
-
-    return data
+local function save_character_data(child)
+	local data = {
+		CharacterName = child:GetAttribute("CharacterName"),
+		Rarity        = child:GetAttribute("Rarity"),
+		PassiveIncome = child:GetAttribute("BasePassiveIncome") or child:GetAttribute("PassiveIncome") or 0,
+		Price         = child:GetAttribute("Price"),
+		Anime         = child:GetAttribute("Anime"),
+		Stars         = child:GetAttribute("Stars") or 1,
+		IsLocked      = child:GetAttribute("IsLocked")    == true,
+		IsProtected   = child:GetAttribute("IsProtected") == true,
+		Size          = {child.Size.X,  child.Size.Y,  child.Size.Z},
+		Color         = {child.Color.R, child.Color.G, child.Color.B},
+		Material      = child.Material.Name,
+		Transparency  = child.Transparency,
+		Shape         = child.Shape.Name,
+	}
+	local mesh = child:FindFirstChildOfClass("SpecialMesh")
+	if mesh then
+		data.MeshId    = mesh.MeshId
+		data.TextureId = mesh.TextureId
+		data.MeshScale = {mesh.Scale.X, mesh.Scale.Y, mesh.Scale.Z}
+		data.MeshType  = mesh.MeshType.Name
+	end
+	local decals = {}
+	for _, d in pairs(child:GetChildren()) do
+		if d:IsA("Decal") or d:IsA("Texture") then
+			table.insert(decals, {ClassName=d.ClassName, Face=d.Face.Name, Texture=d.Texture})
+		end
+	end
+	if #decals > 0 then data.Decals = decals end
+	return data
 end
 
--- ServerLuck is initialized here; all updates go through recalculatePersonalLuck -> updateServerLuck.
--- There is no separate polling loop to avoid two systems overwriting each other.
-workspace:SetAttribute("ServerLuck", 1)
-
-print("[MoneyManager] Loaded")
-
-local function restoreCharacterToStorage(stor, charData)
+local function restore_character_to_storage(stor, cd)
 	local char      = Instance.new("Part")
 	char.Name       = "PlacedCharacter"
 	char.Anchored   = true
 	char.CanCollide = false
-
-	char.Size = charData.Size
-		and Vector3.new(charData.Size[1], charData.Size[2], charData.Size[3])
-		or  Vector3.new(3, 3, 3)
-
-	if charData.Color then
-		char.Color = Color3.new(charData.Color[1], charData.Color[2], charData.Color[3])
-	end
-	if charData.Material    then pcall(function() char.Material = Enum.Material[charData.Material]   end) end
-	if charData.Transparency then char.Transparency = charData.Transparency end
-	if charData.Shape       then pcall(function() char.Shape    = Enum.PartType[charData.Shape]       end) end
-
-	if charData.MeshId and charData.MeshId ~= "" then
+	char.Size = cd.Size and Vector3.new(cd.Size[1], cd.Size[2], cd.Size[3]) or Vector3.new(3, 3, 3)
+	if cd.Color       then char.Color = Color3.new(cd.Color[1], cd.Color[2], cd.Color[3]) end
+	if cd.Material    then pcall(function() char.Material = Enum.Material[cd.Material]  end) end
+	if cd.Transparency then char.Transparency = cd.Transparency end
+	if cd.Shape       then pcall(function() char.Shape    = Enum.PartType[cd.Shape]      end) end
+	if cd.MeshId and cd.MeshId ~= "" then
 		local mesh  = Instance.new("SpecialMesh")
-		mesh.MeshId = charData.MeshId
-		if charData.TextureId then mesh.TextureId = charData.TextureId end
-		if charData.MeshScale then
-			mesh.Scale = Vector3.new(charData.MeshScale[1], charData.MeshScale[2], charData.MeshScale[3])
-		end
-		if charData.MeshType then pcall(function() mesh.MeshType = Enum.MeshType[charData.MeshType] end) end
+		mesh.MeshId = cd.MeshId
+		if cd.TextureId then mesh.TextureId = cd.TextureId end
+		if cd.MeshScale then mesh.Scale = Vector3.new(cd.MeshScale[1], cd.MeshScale[2], cd.MeshScale[3]) end
+		if cd.MeshType  then pcall(function() mesh.MeshType = Enum.MeshType[cd.MeshType] end) end
 		mesh.Parent = char
 	end
-
-	if charData.Decals then
-		for _, d in pairs(charData.Decals) do
+	if cd.Decals then
+		for _, d in pairs(cd.Decals) do
 			local decal   = Instance.new(d.ClassName)
 			pcall(function() decal.Face = Enum.NormalId[d.Face] end)
 			decal.Texture = d.Texture
 			decal.Parent  = char
 		end
 	end
-
-	local stars       = charData.Stars or 1
-	local starMult    = stars > 1 and (1.75 ^ (stars - 1)) or 1
-	local baseIncome  = charData.PassiveIncome or 0
-	local actualIncome = baseIncome * starMult
-
-	char:SetAttribute("CharacterName",     charData.CharacterName)
-	char:SetAttribute("Rarity",            charData.Rarity)
-	char:SetAttribute("BasePassiveIncome", baseIncome)
-	char:SetAttribute("PassiveIncome",     actualIncome)
-	char:SetAttribute("Price",             charData.Price)
-	char:SetAttribute("Anime",             charData.Anime or "Unknown")
+	local stars        = cd.Stars or 1
+	local star_mult    = stars > 1 and (1.75 ^ (stars - 1)) or 1
+	local base_income  = cd.PassiveIncome or 0
+	char:SetAttribute("CharacterName",     cd.CharacterName)
+	char:SetAttribute("Rarity",            cd.Rarity)
+	char:SetAttribute("BasePassiveIncome", base_income)
+	char:SetAttribute("PassiveIncome",     base_income * star_mult)
+	char:SetAttribute("Price",             cd.Price)
+	char:SetAttribute("Anime",             cd.Anime or "Unknown")
 	char:SetAttribute("Stars",             stars)
-	char:SetAttribute("IsLocked",          charData.IsLocked)
-	char:SetAttribute("IsProtected",       charData.IsProtected)
+	char:SetAttribute("IsLocked",          cd.IsLocked)
+	char:SetAttribute("IsProtected",       cd.IsProtected)
 	char:SetAttribute("InInventory",       true)
 	char.Position = Vector3.new(0, -200, 0)
 	char.Parent   = stor
 	return char
 end
 
--- Slot visibility and layout
-local function updateSlotsVisibility(player)
+-- slot visibility and layout
+
+local function update_slots_visibility(player)
 	if not player:FindFirstChild("leaderstats") then return end
-
-	local rebirthLevel   = player.leaderstats.Rebirths.Value
-	local unlockedSlots  = getTotalSlots(player, rebirthLevel)
-	local storageCapacity = STORAGE_PER_REBIRTH[rebirthLevel] or 4
-
-	player:SetAttribute("StorageCapacity", storageCapacity)
-	player:SetAttribute("SlotCount",       unlockedSlots)
-
-	local basePlateau = getPlayerBasePlateau(player)
-	if not basePlateau then return end
-
-	local templateSlot = nil
-	for _, part in pairs(basePlateau:GetChildren()) do
-		if part.Name:match("^Slot%d+$") and part:IsA("BasePart") then
-			templateSlot = part
-			break
-		end
+	local level    = player.leaderstats.Rebirths.Value
+	local unlocked = get_total_slots(player, level)
+	local capacity = STORAGE_PER_REBIRTH[level] or 4
+	player:SetAttribute("StorageCapacity", capacity)
+	player:SetAttribute("SlotCount",       unlocked)
+	local bp = get_base_plateau(player)
+	if not bp then return end
+	local template = nil
+	for _, part in pairs(bp:GetChildren()) do
+		if part.Name:match("^Slot%d+$") and part:IsA("BasePart") then template = part; break end
 	end
-	if not templateSlot then return end
-
-	local slotShape       = templateSlot.Shape
-	local slotSize        = templateSlot.Size
-	local slotMaterial    = templateSlot.Material
-	local slotColor       = templateSlot.Color
-	local slotOrientation = templateSlot.Orientation
-
-	local surfaceY      = basePlateau.Position.Y + basePlateau.Size.Y / 2
-	local slotThickness = (slotShape == Enum.PartType.Cylinder) and slotSize.X or slotSize.Y
-	local slotY         = surfaceY + slotThickness / 2
-
-	local spacing   = 12
-	local cols      = 5
-	local centerX   = basePlateau.Position.X
-	local centerZ   = basePlateau.Position.Z
-	local totalRows = math.ceil(unlockedSlots / cols)
-	local startX    = centerX - (cols - 1) * spacing / 2
-	local startZ    = centerZ - (totalRows - 1) * spacing / 2
-
-	for i = 0, unlockedSlots - 1 do
-		local slotName    = "Slot" .. i
-		local existingSlot = basePlateau:FindFirstChild(slotName)
-
+	if not template then return end
+	local surface_y   = bp.Position.Y + bp.Size.Y / 2
+	local slot_thick  = (template.Shape == Enum.PartType.Cylinder) and template.Size.X or template.Size.Y
+	local slot_y      = surface_y + slot_thick / 2
+	local spacing     = 12
+	local cols        = 5
+	local total_rows  = math.ceil(unlocked / cols)
+	local start_x     = bp.Position.X - (cols - 1) * spacing / 2
+	local start_z     = bp.Position.Z - (total_rows - 1) * spacing / 2
+	for i = 0, unlocked - 1 do
+		local slot_name = "Slot" .. i
+		local existing  = bp:FindFirstChild(slot_name)
 		local row       = math.floor(i / cols)
 		local col       = i % cols
-		local correctPos = Vector3.new(startX + col * spacing, slotY, startZ + row * spacing)
-
-		if existingSlot then
-			local yDiff = math.abs(existingSlot.Position.Y - slotY)
-			if yDiff > 0.5 then
-				local charPart = nil
-				for _, child in pairs(existingSlot:GetChildren()) do
-					if child.Name == "PlacedCharacter" then charPart = child; break end
+		local correct_pos = Vector3.new(start_x + col * spacing, slot_y, start_z + row * spacing)
+		if existing then
+			if math.abs(existing.Position.Y - slot_y) > 0.5 then
+				local char_part = nil
+				for _, child in pairs(existing:GetChildren()) do
+					if child.Name == "PlacedCharacter" then char_part = child; break end
 				end
-				local fixedPos = Vector3.new(existingSlot.Position.X, slotY, existingSlot.Position.Z)
-				existingSlot.Position    = fixedPos
-				existingSlot.Orientation = slotOrientation
-				existingSlot.Shape       = slotShape
-				existingSlot.Size        = slotSize
-				if charPart then
-					charPart.Position = fixedPos + Vector3.new(0, 2, 0)
-					local nameTag = charPart:FindFirstChild("NameTag")
-					if nameTag then nameTag.Adornee = charPart end
+				existing.Position    = Vector3.new(existing.Position.X, slot_y, existing.Position.Z)
+				existing.Orientation = template.Orientation
+				existing.Shape       = template.Shape
+				existing.Size        = template.Size
+				if char_part then
+					char_part.Position = existing.Position + Vector3.new(0, 2, 0)
+					local tag = char_part:FindFirstChild("NameTag")
+					if tag then tag.Adornee = char_part end
 				end
 			end
 		else
-			local newSlot             = Instance.new("Part")
-			newSlot.Name              = slotName
-			newSlot.Shape             = slotShape
-			newSlot.Size              = slotSize
-			newSlot.Material          = slotMaterial
-			newSlot.Color             = slotColor
-			newSlot.Transparency      = 0.5
-			newSlot.Anchored          = true
-			newSlot.CanCollide        = true
-			newSlot.Orientation       = slotOrientation
-			newSlot.Position          = correctPos
-			newSlot:SetAttribute("Occupied", false)
-			newSlot.Parent            = basePlateau
+			local new_slot        = Instance.new("Part")
+			new_slot.Name         = slot_name
+			new_slot.Shape        = template.Shape
+			new_slot.Size         = template.Size
+			new_slot.Material     = template.Material
+			new_slot.Color        = template.Color
+			new_slot.Transparency = 0.5
+			new_slot.Anchored     = true
+			new_slot.CanCollide   = true
+			new_slot.Orientation  = template.Orientation
+			new_slot.Position     = correct_pos
+			new_slot:SetAttribute("Occupied", false)
+			new_slot.Parent       = bp
 		end
 	end
-
-	for _, part in pairs(basePlateau:GetChildren()) do
+	for _, part in pairs(bp:GetChildren()) do
 		if part.Name:match("^Slot%d+$") then
-			local slotNumber = tonumber(part.Name:match("%d+"))
-			if slotNumber ~= nil then
-				if slotNumber < unlockedSlots then
+			local num = tonumber(part.Name:match("%d+"))
+			if num ~= nil then
+				if num < unlocked then
 					part.Transparency = part:GetAttribute("Occupied") and 0.7 or 0.5
 					part.CanCollide   = true
 				else
@@ -404,51 +336,53 @@ local function updateSlotsVisibility(player)
 	end
 end
 
--- Spawn player at their assigned base location
-local function spawnPlayerAtBase(player, character, playerNumber)
-	local spawnerFolder = workspace:FindFirstChild("SpawnerPlayer" .. playerNumber)
-	if not spawnerFolder then return end
-	local spawnLocation = spawnerFolder:FindFirstChild("SpawnLocation" .. playerNumber)
-	if not spawnLocation then return end
-	local rootPart = character:WaitForChild("HumanoidRootPart", 5)
-	if not rootPart then return end
-	rootPart.CFrame = spawnLocation.CFrame + Vector3.new(0, 3, 0)
+-- spawn player at base
+
+local function spawn_at_base(player, character, pn)
+	local folder = workspace:FindFirstChild("SpawnerPlayer" .. pn)
+	if not folder then return end
+	local spawn = folder:FindFirstChild("SpawnLocation" .. pn)
+	if not spawn  then return end
+	local root  = character:WaitForChild("HumanoidRootPart", 5)
+	if not root  then return end
+	root.CFrame = spawn.CFrame + Vector3.new(0, 3, 0)
 end
 
--- Player setup
+-- player added
+
 Players.PlayerAdded:Connect(function(player)
-	local playerNumber = assignSpawnerToPlayer(player)
+	local pn = assign_spawner(player)
 
-	local stats        = Instance.new("Folder")
-	stats.Name         = "leaderstats"
-	stats.Parent       = player
+	local stats    = Instance.new("Folder")
+	stats.Name     = "leaderstats"
+	stats.Parent   = player
 
-	local coins        = Instance.new("NumberValue")
-	coins.Name         = "Coins"
-	coins.Value        = 10000
-	coins.Parent       = stats
+	local coins    = Instance.new("NumberValue")
+	coins.Name     = "Coins"
+	coins.Value    = 10000
+	coins.Parent   = stats
 
-	local rebirths     = Instance.new("IntValue")
-	rebirths.Name      = "Rebirths"
-	rebirths.Value     = 0
-	rebirths.Parent    = stats
+	local rebirths = Instance.new("IntValue")
+	rebirths.Name  = "Rebirths"
+	rebirths.Value = 0
+	rebirths.Parent = stats
 
-	local inventory    = Instance.new("Folder")
-	inventory.Name     = "Inventory"
-	inventory.Parent   = player
+	local inv      = Instance.new("Folder")
+	inv.Name       = "Inventory"
+	inv.Parent     = player
 
-	local invCount     = Instance.new("IntValue")
-	invCount.Name      = "InventoryCount"
-	invCount.Value     = 0
-	invCount.Parent    = inventory
+	local inv_count      = Instance.new("IntValue")
+	inv_count.Name       = "InventoryCount"
+	inv_count.Value      = 0
+	inv_count.Parent     = inv
 
-	Instance.new("Folder", inventory).Name = "Storage"
-	Instance.new("Folder", player).Name    = "DiscoveredCharacters"
-	Instance.new("Folder", player).Name    = "SeenCharacters"
+	Instance.new("Folder", inv).Name    = "Storage"
+	Instance.new("Folder", player).Name = "DiscoveredCharacters"
+	Instance.new("Folder", player).Name = "SeenCharacters"
 
-	player:SetAttribute("CashMultiplier",  getCashMultiplier(0))
+	player:SetAttribute("CashMultiplier",  get_cash_multiplier(0))
 	player:SetAttribute("StorageCapacity", STORAGE_PER_REBIRTH[0])
-	player:SetAttribute("SlotCount",       getTotalSlots(player, 0))
+	player:SetAttribute("SlotCount",       get_total_slots(player, 0))
 	player:SetAttribute("MaxRebirth",      9)
 	player:SetAttribute("RebirthLuck",     0)
 	player:SetAttribute("IndexLuck",       0)
@@ -456,20 +390,18 @@ Players.PlayerAdded:Connect(function(player)
 	player:SetAttribute("PersonalLuck",    1)
 	player:SetAttribute("LuckBoostExpire", 0)
 
-	recalculatePersonalLuck(player)
+	recalculate_personal_luck(player)
 
 	player.CharacterAdded:Connect(function(character)
 		task.wait(0.2)
-		if playerNumber then spawnPlayerAtBase(player, character, playerNumber) end
+		if pn then spawn_at_base(player, character, pn) end
 		task.wait(0.2)
-		updateSlotsVisibility(player)
-		applyBaseColor(player)
-
+		update_slots_visibility(player)
+		apply_base_color(player)
 		if player:GetAttribute("HasBP_x2Speed") then
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
 			if humanoid then humanoid.WalkSpeed = humanoid.WalkSpeed * 2 end
 		end
-
 		for _, part in pairs(character:GetDescendants()) do
 			if part:IsA("BasePart") then
 				pcall(function() part.CollisionGroup = GROUP_PLAYERS end)
@@ -478,22 +410,17 @@ Players.PlayerAdded:Connect(function(player)
 	end)
 
 	rebirths.Changed:Connect(function()
-		updateSlotsVisibility(player)
-		player:SetAttribute("CashMultiplier", getCashMultiplier(rebirths.Value))
-		recalculatePersonalLuck(player)
+		update_slots_visibility(player)
+		player:SetAttribute("CashMultiplier", get_cash_multiplier(rebirths.Value))
+		recalculate_personal_luck(player)
 	end)
 
-	-- Reconnect luck when relevant attributes change
-	player:GetAttributeChangedSignal("HasBP_x2Luck"):Connect(function()  recalculatePersonalLuck(player) end)
-	player:GetAttributeChangedSignal("IndexLuck"):Connect(function()      recalculatePersonalLuck(player) end)
-	player:GetAttributeChangedSignal("PremiumLuck"):Connect(function()    recalculatePersonalLuck(player) end)
-	player:GetAttributeChangedSignal("IsVIP"):Connect(function()          recalculatePersonalLuck(player) end)
-	player:GetAttributeChangedSignal("PotionLuck"):Connect(function()     recalculatePersonalLuck(player) end)
-
-	player:GetAttributeChangedSignal("HasBP_ExtraSlots"):Connect(function()
-		updateSlotsVisibility(player)
-	end)
-
+	player:GetAttributeChangedSignal("HasBP_x2Luck"):Connect(function()  recalculate_personal_luck(player) end)
+	player:GetAttributeChangedSignal("IndexLuck"):Connect(function()      recalculate_personal_luck(player) end)
+	player:GetAttributeChangedSignal("PremiumLuck"):Connect(function()    recalculate_personal_luck(player) end)
+	player:GetAttributeChangedSignal("IsVIP"):Connect(function()          recalculate_personal_luck(player) end)
+	player:GetAttributeChangedSignal("PotionLuck"):Connect(function()     recalculate_personal_luck(player) end)
+	player:GetAttributeChangedSignal("HasBP_ExtraSlots"):Connect(function() update_slots_visibility(player) end)
 	player:GetAttributeChangedSignal("HasBP_x2Speed"):Connect(function()
 		if player:GetAttribute("HasBP_x2Speed") and player.Character then
 			local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
@@ -502,335 +429,286 @@ Players.PlayerAdded:Connect(function(player)
 	end)
 
 	task.delay(6, function()
-		if player and player.Parent then updateSlotsVisibility(player) end
+		if player and player.Parent then update_slots_visibility(player) end
 	end)
 
-	-- Passive income loop: runs every second and adds income from all placed characters
+	-- passive income loop
 	task.spawn(function()
 		while player and player.Parent do
 			task.wait(1)
-
-			local totalIncome = 0
-			local multiplier  = player:GetAttribute("CashMultiplier") or 1
-
-			local basePlateau = getPlayerBasePlateau(player)
-			if basePlateau then
-				for _, slot in pairs(basePlateau:GetChildren()) do
+			local total      = 0
+			local multiplier = player:GetAttribute("CashMultiplier") or 1
+			local bp = get_base_plateau(player)
+			if bp then
+				for _, slot in pairs(bp:GetChildren()) do
 					if slot.Name:match("^Slot%d+$") then
 						for _, child in pairs(slot:GetChildren()) do
 							if child.Name == "PlacedCharacter" then
-								totalIncome = totalIncome + (child:GetAttribute("PassiveIncome") or 0)
+								total = total + (child:GetAttribute("PassiveIncome") or 0)
 							end
 						end
 					end
 				end
 			end
-
-			local finalIncome = math.floor(totalIncome * multiplier)
-
-			if workspace:GetAttribute("GlobalMoneyActive")    then finalIncome = finalIncome * 2 end
-			if player:GetAttribute("HasBP_x2Coins")           then finalIncome = finalIncome * 2 end
-
-			local potionMoneyExp = player:GetAttribute("PotionMoneyExpire") or 0
-			if os.time() < potionMoneyExp then
+			local income = math.floor(total * multiplier)
+			if workspace:GetAttribute("GlobalMoneyActive") then income = income * 2 end
+			if player:GetAttribute("HasBP_x2Coins")        then income = income * 2 end
+			local potion_exp = player:GetAttribute("PotionMoneyExpire") or 0
+			if os.time() < potion_exp then
 				local pm = player:GetAttribute("PotionMoneyMult") or 1
-				if pm > 1 then finalIncome = math.floor(finalIncome * pm) end
+				if pm > 1 then income = math.floor(income * pm) end
 			end
-
-			if finalIncome > 0 then
-				player.leaderstats.Coins.Value = player.leaderstats.Coins.Value + finalIncome
+			if income > 0 then
+				player.leaderstats.Coins.Value = player.leaderstats.Coins.Value + income
 			end
 		end
 	end)
 end)
 
--- Player cleanup
+-- player cleanup
+
 Players.PlayerRemoving:Connect(function(player)
-	assignedSpawners[player.UserId] = nil
-	task.defer(updateServerLuck)
+	assigned_spawners[player.UserId] = nil
+	task.defer(update_server_luck)
 end)
 
--- Steal system
-local function stealTravelingCharacter(stealer, travelChar, prompt)
-	if not travelChar or not travelChar.Parent then return end
-	if travelChar.Name ~= "TravelingCharacter"  then return end
+-- steal system
 
-	local stealPrice  = travelChar:GetAttribute("StealPrice")  or 0
-	local ownerUserId = travelChar:GetAttribute("OwnerUserId") or 0
-	local paidPrice   = travelChar:GetAttribute("PaidPrice")   or 0
-	local charName    = travelChar:GetAttribute("CharacterName") or "?"
-
-	if stealer.UserId == ownerUserId then
+local function steal_traveling_character(stealer, travel_char, prompt)
+	if not travel_char or not travel_char.Parent then return end
+	if travel_char.Name ~= "TravelingCharacter"  then return end
+	local steal_price  = travel_char:GetAttribute("StealPrice")  or 0
+	local owner_id     = travel_char:GetAttribute("OwnerUserId") or 0
+	local paid_price   = travel_char:GetAttribute("PaidPrice")   or 0
+	local char_name    = travel_char:GetAttribute("CharacterName") or "?"
+	if stealer.UserId == owner_id then
 		notifyEvent:FireClient(stealer, "That's your own character!", "error")
 		return
 	end
-
-	local stealerStats = stealer:FindFirstChild("leaderstats")
-	if not stealerStats then return end
-	local stealerCoins = stealerStats:FindFirstChild("Coins")
-	if not stealerCoins or stealerCoins.Value < stealPrice then
-		notifyEvent:FireClient(stealer, "Not enough coins! Need " .. formatNumber(stealPrice), "error")
+	local stealer_stats = stealer:FindFirstChild("leaderstats")
+	if not stealer_stats then return end
+	local stealer_coins = stealer_stats:FindFirstChild("Coins")
+	if not stealer_coins or stealer_coins.Value < steal_price then
+		notifyEvent:FireClient(stealer, "Not enough coins! Need " .. formatNumber(steal_price), "error")
 		return
 	end
-
-	local stealerBase = getPlayerBasePlateau(stealer)
-	if not stealerBase then
+	local stealer_base = get_base_plateau(stealer)
+	if not stealer_base then
 		notifyEvent:FireClient(stealer, "Cannot find your base!", "error")
 		return
 	end
-
-	local rebirthLevel  = stealerStats:FindFirstChild("Rebirths") and stealerStats.Rebirths.Value or 0
-	local unlockedSlots = getTotalSlots(stealer, rebirthLevel)
-	local freeSlot      = nil
-
-	for i = 0, unlockedSlots - 1 do
-		local slot = stealerBase:FindFirstChild("Slot" .. i)
+	local level    = stealer_stats:FindFirstChild("Rebirths") and stealer_stats.Rebirths.Value or 0
+	local unlocked = get_total_slots(stealer, level)
+	local free_slot = nil
+	for i = 0, unlocked - 1 do
+		local slot = stealer_base:FindFirstChild("Slot" .. i)
 		if slot then
 			local occupied = false
 			for _, child in pairs(slot:GetChildren()) do
 				if child.Name == "PlacedCharacter" then occupied = true; break end
 			end
 			if not occupied and slot:GetAttribute("Occupied") ~= true then
-				freeSlot = slot
-				break
+				free_slot = slot; break
 			end
 		end
 	end
-
-	if not freeSlot then
+	if not free_slot then
 		notifyEvent:FireClient(stealer, "All slots full! Can't steal.", "error")
 		return
 	end
-
-	-- Release the old owner's reserved slot
-	local oldPlayerNumber   = travelChar:GetAttribute("PlayerNumber")   or 1
-	local oldTargetSlotName = travelChar:GetAttribute("TargetSlotName")
-	local oldSpawnerFolder  = workspace:FindFirstChild("SpawnerPlayer" .. oldPlayerNumber)
-	if oldSpawnerFolder then
-		local oldBase = oldSpawnerFolder:FindFirstChild("BasePlateau" .. oldPlayerNumber)
-		if oldBase and oldTargetSlotName then
-			local oldSlot = oldBase:FindFirstChild(oldTargetSlotName)
-			if oldSlot then oldSlot:SetAttribute("Occupied", false) end
+	local old_pn        = travel_char:GetAttribute("PlayerNumber")   or 1
+	local old_slot_name = travel_char:GetAttribute("TargetSlotName")
+	local old_folder    = workspace:FindFirstChild("SpawnerPlayer" .. old_pn)
+	if old_folder then
+		local old_base = old_folder:FindFirstChild("BasePlateau" .. old_pn)
+		if old_base and old_slot_name then
+			local old_slot = old_base:FindFirstChild(old_slot_name)
+			if old_slot then old_slot:SetAttribute("Occupied", false) end
 		end
 	end
-
-	-- Refund the original owner
-	local originalOwner = Players:GetPlayerByUserId(ownerUserId)
-	if originalOwner then
-		local ownerStats = originalOwner:FindFirstChild("leaderstats")
-		if ownerStats and ownerStats:FindFirstChild("Coins") then
-			ownerStats.Coins.Value = ownerStats.Coins.Value + paidPrice
-			notifyEvent:FireClient(originalOwner,
-				charName .. " was stolen! +" .. formatNumber(paidPrice) .. " refunded", "warning")
+	local owner = Players:GetPlayerByUserId(owner_id)
+	if owner then
+		local owner_stats = owner:FindFirstChild("leaderstats")
+		if owner_stats and owner_stats:FindFirstChild("Coins") then
+			owner_stats.Coins.Value = owner_stats.Coins.Value + paid_price
+			notifyEvent:FireClient(owner, char_name .. " was stolen! +" .. formatNumber(paid_price) .. " refunded", "warning")
 		end
 	end
-
-	stealerCoins.Value = stealerCoins.Value - stealPrice
-
-	local newStealPrice = math.ceil(stealPrice * 1.03)
-	travelChar:SetAttribute("OwnerUserId",    stealer.UserId)
-	travelChar:SetAttribute("OwnerName",      stealer.Name)
-	travelChar:SetAttribute("PaidPrice",      stealPrice)
-	travelChar:SetAttribute("StealPrice",     newStealPrice)
-	freeSlot:SetAttribute("Occupied", true)
-
-	local stealerNumber = stealer:GetAttribute("SpawnerNumber") or 1
-	travelChar:SetAttribute("PlayerNumber",   stealerNumber)
-	travelChar:SetAttribute("TargetSlotName", freeSlot.Name)
-	travelChar:SetAttribute("IsRerouted",     true)
-
+	stealer_coins.Value = stealer_coins.Value - steal_price
+	local new_steal_price = math.ceil(steal_price * 1.03)
+	travel_char:SetAttribute("OwnerUserId",    stealer.UserId)
+	travel_char:SetAttribute("OwnerName",      stealer.Name)
+	travel_char:SetAttribute("PaidPrice",      steal_price)
+	travel_char:SetAttribute("StealPrice",     new_steal_price)
+	free_slot:SetAttribute("Occupied", true)
+	travel_char:SetAttribute("PlayerNumber",   stealer:GetAttribute("SpawnerNumber") or 1)
+	travel_char:SetAttribute("TargetSlotName", free_slot.Name)
+	travel_char:SetAttribute("IsRerouted",     true)
 	if prompt and prompt.Parent then
-		prompt.ObjectText = charName .. " - " .. formatNumber(newStealPrice) .. " coins"
+		prompt.ObjectText = char_name .. " - " .. formatNumber(new_steal_price) .. " coins"
 	end
-
-	notifyEvent:FireClient(stealer, "Stole " .. charName .. " for " .. formatNumber(stealPrice) .. "!", "success")
-	print("[MoneyManager] " .. stealer.Name .. " stole " .. charName .. " (paid " .. formatNumber(stealPrice) .. ")")
+	notifyEvent:FireClient(stealer, "Stole " .. char_name .. " for " .. formatNumber(steal_price) .. "!", "success")
+	print("[MoneyManager] " .. stealer.Name .. " stole " .. char_name .. " (paid " .. formatNumber(steal_price) .. ")")
 end
 
--- Purchase event
+-- purchase event
+
 purchaseEvent.OnServerEvent:Connect(function(player, cube)
-	if not cube or not cube.Parent then return end
-	if not cube:IsA("BasePart")    then return end
-	if cube.Name ~= "BandaCube"    then return end
+	if not cube or not cube.Parent    then return end
+	if not cube:IsA("BasePart")       then return end
+	if cube.Name ~= "BandaCube"       then return end
 	if cube:GetAttribute("Purchased") == true then return end
-
-	local charName = cube:GetAttribute("CharacterName")
-	local price    = cube:GetAttribute("Price")
-	if not charName or not price then return end
+	local char_name = cube:GetAttribute("CharacterName")
+	local price     = cube:GetAttribute("Price")
+	if not char_name or not price then return end
 	cube:SetAttribute("Purchased", true)
-
-	local leaderstats = player:FindFirstChild("leaderstats")
-	if not leaderstats then cube:SetAttribute("Purchased", false); return end
-	local coins = leaderstats:FindFirstChild("Coins")
+	local ls = player:FindFirstChild("leaderstats")
+	if not ls then cube:SetAttribute("Purchased", false); return end
+	local coins = ls:FindFirstChild("Coins")
 	if not coins then cube:SetAttribute("Purchased", false); return end
-
-	local rebirthLevel = leaderstats:FindFirstChild("Rebirths") and leaderstats.Rebirths.Value or 0
-	local reqRebirth   = cube:GetAttribute("RequiredRebirth") or 0
-	if rebirthLevel < reqRebirth then
+	local level       = ls:FindFirstChild("Rebirths") and ls.Rebirths.Value or 0
+	local req_rebirth = cube:GetAttribute("RequiredRebirth") or 0
+	if level < req_rebirth then
 		cube:SetAttribute("Purchased", false)
-		local animeName = cube:GetAttribute("Anime") or "this island"
+		local anime = cube:GetAttribute("Anime") or "this island"
 		notifyEvent:FireClient(player,
-			"Locked! Requires Rebirth " .. reqRebirth .. " to collect " .. animeName ..
-			" characters. (You are R" .. rebirthLevel .. ")", "error")
+			"Locked! Requires Rebirth " .. req_rebirth .. " to collect " .. anime ..
+			" characters. (You are R" .. level .. ")", "error")
 		return
 	end
-
 	if coins.Value < price then
 		cube:SetAttribute("Purchased", false)
 		notifyEvent:FireClient(player, "Not enough coins! Need " .. formatNumber(price), "error")
 		return
 	end
-
-	local basePlateau = getPlayerBasePlateau(player)
-	if not basePlateau then cube:SetAttribute("Purchased", false); return end
-
-	local unlockedSlots = getTotalSlots(player, rebirthLevel)
-	local freeSlot      = nil
-
-	for i = 0, unlockedSlots - 1 do
-		local slot = basePlateau:FindFirstChild("Slot" .. i)
+	local bp = get_base_plateau(player)
+	if not bp then cube:SetAttribute("Purchased", false); return end
+	local unlocked  = get_total_slots(player, level)
+	local free_slot = nil
+	for i = 0, unlocked - 1 do
+		local slot = bp:FindFirstChild("Slot" .. i)
 		if slot then
-			local hasChar = false
+			local has_char = false
 			for _, child in pairs(slot:GetChildren()) do
-				if child.Name == "PlacedCharacter" then hasChar = true; break end
+				if child.Name == "PlacedCharacter" then has_char = true; break end
 			end
-			if not hasChar and slot:GetAttribute("Occupied") ~= true then
-				freeSlot = slot
-				break
+			if not has_char and slot:GetAttribute("Occupied") ~= true then
+				free_slot = slot; break
 			end
 		end
 	end
-
-	if not freeSlot then
+	if not free_slot then
 		cube:SetAttribute("Purchased", false)
 		notifyEvent:FireClient(player, "All slots full! Move characters to storage first.", "error")
 		return
 	end
-
 	coins.Value = coins.Value - price
-
-	local newChar     = cube:Clone()
-	newChar.Name      = "TravelingCharacter"
-	newChar.Anchored  = true
-	newChar.CanCollide = false
-	newChar:SetAttribute("Purchased", nil)
-
-	local playerNumber = player:GetAttribute("SpawnerNumber") or 1
-	newChar:SetAttribute("TargetSlotName", freeSlot.Name)
-	newChar:SetAttribute("PlayerNumber",   playerNumber)
-	newChar:SetAttribute("Processing",     false)
-	freeSlot:SetAttribute("Occupied", true)
-
-	local stealPrice = math.ceil(price * 1.03)
-	newChar:SetAttribute("OwnerUserId", player.UserId)
-	newChar:SetAttribute("OwnerName",   player.Name)
-	newChar:SetAttribute("PaidPrice",   price)
-	newChar:SetAttribute("StealPrice",  stealPrice)
-
-	local stealPrompt                    = Instance.new("ProximityPrompt")
-	stealPrompt.Name                     = "StealPrompt"
-	stealPrompt.ActionText               = "Steal"
-	stealPrompt.ObjectText               = charName .. " - " .. formatNumber(stealPrice) .. " coins"
-	stealPrompt.MaxActivationDistance    = 8
-	stealPrompt.HoldDuration             = 1
-	stealPrompt.Parent                   = newChar
-	stealPrompt.Triggered:Connect(function(stealingPlayer)
-		stealTravelingCharacter(stealingPlayer, newChar, stealPrompt)
+	local new_char      = cube:Clone()
+	new_char.Name       = "TravelingCharacter"
+	new_char.Anchored   = true
+	new_char.CanCollide = false
+	new_char:SetAttribute("Purchased", nil)
+	local pn = player:GetAttribute("SpawnerNumber") or 1
+	new_char:SetAttribute("TargetSlotName", free_slot.Name)
+	new_char:SetAttribute("PlayerNumber",   pn)
+	new_char:SetAttribute("Processing",     false)
+	free_slot:SetAttribute("Occupied", true)
+	local steal_price = math.ceil(price * 1.03)
+	new_char:SetAttribute("OwnerUserId", player.UserId)
+	new_char:SetAttribute("OwnerName",   player.Name)
+	new_char:SetAttribute("PaidPrice",   price)
+	new_char:SetAttribute("StealPrice",  steal_price)
+	local prompt                       = Instance.new("ProximityPrompt")
+	prompt.Name                        = "StealPrompt"
+	prompt.ActionText                  = "Steal"
+	prompt.ObjectText                  = char_name .. " - " .. formatNumber(steal_price) .. " coins"
+	prompt.MaxActivationDistance       = 8
+	prompt.HoldDuration                = 1
+	prompt.Parent                      = new_char
+	prompt.Triggered:Connect(function(stealing_player)
+		steal_traveling_character(stealing_player, new_char, prompt)
 	end)
-
-	newChar.Parent = workspace
+	new_char.Parent = workspace
 	cube:Destroy()
-
-	local discoveredFolder = player:FindFirstChild("DiscoveredCharacters")
-	if discoveredFolder and not discoveredFolder:FindFirstChild(charName) then
+	local discovered = player:FindFirstChild("DiscoveredCharacters")
+	if discovered and not discovered:FindFirstChild(char_name) then
 		local tag     = Instance.new("BoolValue")
-		tag.Name      = charName
+		tag.Name      = char_name
 		tag.Value     = true
-		tag.Parent    = discoveredFolder
+		tag.Parent    = discovered
 	end
-
-	notifyEvent:FireClient(player, charName .. " purchased for " .. formatNumber(price) .. "!", "success")
+	notifyEvent:FireClient(player, char_name .. " purchased for " .. formatNumber(price) .. "!", "success")
 end)
 
--- Rebirth event
+-- rebirth event
+
 rebirthEvent.OnServerEvent:Connect(function(player)
 	if not player:FindFirstChild("leaderstats") then return end
-
-	local currentRebirth = player.leaderstats.Rebirths.Value
-	local nextRebirth    = currentRebirth + 1
-
-	if nextRebirth > 9 then
+	local current = player.leaderstats.Rebirths.Value
+	local next_rb = current + 1
+	if next_rb > 9 then
 		notifyEvent:FireClient(player, "Already at max rebirth (Level 9)!", "error")
 		return
 	end
-
-	local coinsCost = REBIRTH_COINS_COST[nextRebirth] or 999999999
-	if player.leaderstats.Coins.Value < coinsCost then
+	local coins_cost = REBIRTH_COINS_COST[next_rb] or 999999999
+	if player.leaderstats.Coins.Value < coins_cost then
 		notifyEvent:FireClient(player,
-			"Need " .. formatNumber(coinsCost) .. " coins for Rebirth " .. nextRebirth ..
+			"Need " .. formatNumber(coins_cost) .. " coins for Rebirth " .. next_rb ..
 			". You have: " .. formatNumber(player.leaderstats.Coins.Value), "error")
 		return
 	end
-
-	local requirements = REBIRTH_REQUIREMENTS[nextRebirth]
+	local requirements = REBIRTH_REQUIREMENTS[next_rb]
 	if requirements then
-		local charCounts = countAllCharactersForRebirth(player)
-		local missing    = {}
-		for charName, needed in pairs(requirements.Characters) do
-			local have = charCounts[charName] or 0
+		local counts  = count_all_characters(player)
+		local missing = {}
+		for char_name, needed in pairs(requirements.Characters) do
+			local have = counts[char_name] or 0
 			if have < needed then
-				table.insert(missing, charName .. " (" .. have .. "/" .. needed .. ")")
+				table.insert(missing, char_name .. " (" .. have .. "/" .. needed .. ")")
 			end
 		end
 		if #missing > 0 then
 			notifyEvent:FireClient(player,
-				"Rebirth " .. nextRebirth .. " needs: " .. table.concat(missing, ", "), "error")
+				"Rebirth " .. next_rb .. " needs: " .. table.concat(missing, ", "), "error")
 			return
 		end
 	end
-
-	local bonusCoins = REBIRTH_BONUS_COINS[nextRebirth] or 0
-	local hasSaveAll = player:GetAttribute("HasBP_SaveAll") == true
-
-	-- Save all characters before wiping if the player has SaveAll perk
-	local allCharData = {}
-	if hasSaveAll then
-		local basePlateau = getPlayerBasePlateau(player)
-		if basePlateau then
-			for _, slot in pairs(basePlateau:GetChildren()) do
+	local bonus_coins = REBIRTH_BONUS_COINS[next_rb] or 0
+	local has_save_all = player:GetAttribute("HasBP_SaveAll") == true
+	local saved_chars = {}
+	if has_save_all then
+		local bp = get_base_plateau(player)
+		if bp then
+			for _, slot in pairs(bp:GetChildren()) do
 				if slot.Name:match("^Slot%d+$") then
 					for _, child in pairs(slot:GetChildren()) do
 						if child:IsA("BasePart") and child.Name == "PlacedCharacter" then
-							table.insert(allCharData, saveCharacterData(child))
+							table.insert(saved_chars, save_character_data(child))
 						end
 					end
 				end
 			end
 		end
-		local inventory = player:FindFirstChild("Inventory")
-		if inventory then
-			local storageFolder = inventory:FindFirstChild("Storage")
-			if storageFolder then
-				for _, child in pairs(storageFolder:GetChildren()) do
+		local inv = player:FindFirstChild("Inventory")
+		if inv then
+			local stor = inv:FindFirstChild("Storage")
+			if stor then
+				for _, child in pairs(stor:GetChildren()) do
 					if child:IsA("BasePart") then
-						table.insert(allCharData, saveCharacterData(child))
+						table.insert(saved_chars, save_character_data(child))
 					end
 				end
 			end
 		end
 	end
-
-	player.leaderstats.Rebirths.Value = nextRebirth
-	player.leaderstats.Coins.Value    = bonusCoins
-
-	player:SetAttribute("SelectedBaseTheme", nextRebirth)
-	applyBaseColor(player)
-	recalculatePersonalLuck(player)
-
-	-- Clear all slots and storage
-	local basePlateau = getPlayerBasePlateau(player)
-	if basePlateau then
-		for _, slot in pairs(basePlateau:GetChildren()) do
+	player.leaderstats.Rebirths.Value = next_rb
+	player.leaderstats.Coins.Value    = bonus_coins
+	player:SetAttribute("SelectedBaseTheme", next_rb)
+	apply_base_color(player)
+	recalculate_personal_luck(player)
+	local bp = get_base_plateau(player)
+	if bp then
+		for _, slot in pairs(bp:GetChildren()) do
 			if slot.Name:match("^Slot%d+$") then
 				for _, child in pairs(slot:GetChildren()) do
 					if child.Name == "PlacedCharacter" then child:Destroy() end
@@ -839,194 +717,166 @@ rebirthEvent.OnServerEvent:Connect(function(player)
 			end
 		end
 	end
-
-	local inventory = player:FindFirstChild("Inventory")
-	if inventory then
-		local storageFolder = inventory:FindFirstChild("Storage")
-		if storageFolder then
-			for _, child in pairs(storageFolder:GetChildren()) do child:Destroy() end
-		end
-		local invCount = inventory:FindFirstChild("InventoryCount")
-		if invCount then invCount.Value = 0 end
+	local inv = player:FindFirstChild("Inventory")
+	if inv then
+		local stor = inv:FindFirstChild("Storage")
+		if stor then for _, child in pairs(stor:GetChildren()) do child:Destroy() end end
+		local ic = inv:FindFirstChild("InventoryCount")
+		if ic then ic.Value = 0 end
 	end
-
-	updateSlotsVisibility(player)
-
-	-- Restore saved characters into storage after slots are ready
-	if hasSaveAll and #allCharData > 0 then
+	update_slots_visibility(player)
+	if has_save_all and #saved_chars > 0 then
 		task.delay(1, function()
-			local inv = player:FindFirstChild("Inventory")
-			if not inv then return end
-			local stor = inv:FindFirstChild("Storage")
-			if not stor then return end
-
-			local restoredCount = 0
-			for _, charData in ipairs(allCharData) do
-				restoreCharacterToStorage(stor, charData)
-				restoredCount = restoredCount + 1
+			local i2 = player:FindFirstChild("Inventory")
+			if not i2 then return end
+			local s2 = i2:FindFirstChild("Storage")
+			if not s2 then return end
+			local count = 0
+			for _, cd in ipairs(saved_chars) do
+				restore_character_to_storage(s2, cd)
+				count = count + 1
 			end
-
-			local invCount = inv:FindFirstChild("InventoryCount")
-			if invCount then invCount.Value = invCount.Value + restoredCount end
-
+			local ic = i2:FindFirstChild("InventoryCount")
+			if ic then ic.Value = ic.Value + count end
 			notifyEvent:FireClient(player,
-				"Save All: " .. restoredCount .. " characters survived the rebirth! (In Storage)", "success")
+				"Save All: " .. count .. " characters survived the rebirth! (In Storage)", "success")
 		end)
 	end
-
-	local showcaseCount = 0
-	if basePlateau then
-		for _, child in pairs(basePlateau:GetChildren()) do
+	local showcase_count = 0
+	if bp then
+		for _, child in pairs(bp:GetChildren()) do
 			if child.Name:match("^ShowcasePedestal") then
 				for _, sc in pairs(child:GetChildren()) do
 					if sc:IsA("BasePart") and sc.Name == "ShowcaseCharacter" then
-						showcaseCount = showcaseCount + 1
+						showcase_count = showcase_count + 1
 					end
 				end
 			end
 		end
 	end
-
-	local newMult    = getCashMultiplier(nextRebirth)
-	local newSlots   = getTotalSlots(player, nextRebirth)
-	local newStorage = STORAGE_PER_REBIRTH[nextRebirth] or 4
-	local newLuck    = getRebirthLuck(nextRebirth)
-
-	local savedMsg = ""
-	if hasSaveAll then
-		savedMsg = "\nAll characters saved!"
-	elseif showcaseCount > 0 then
-		savedMsg = "\n" .. showcaseCount .. " Trophy Stand character(s) survived!"
+	local new_mult    = get_cash_multiplier(next_rb)
+	local new_slots   = get_total_slots(player, next_rb)
+	local new_storage = STORAGE_PER_REBIRTH[next_rb] or 4
+	local new_luck    = get_rebirth_luck(next_rb)
+	local saved_msg = ""
+	if has_save_all then
+		saved_msg = "\nAll characters saved!"
+	elseif showcase_count > 0 then
+		saved_msg = "\n" .. showcase_count .. " Trophy Stand character(s) survived!"
 	end
-
 	notifyEvent:FireClient(player,
-		"REBIRTH " .. nextRebirth .. " SUCCESS!\n" ..
-		"Multiplier: x" .. newMult .. "\n" ..
-		"Slots: " .. newSlots .. " | Storage: " .. newStorage .. "\n" ..
-		"Luck: +x" .. string.format("%.1f", newLuck) .. " from rebirth\n" ..
-		"Bonus: " .. formatNumber(bonusCoins) .. " coins!" ..
-		savedMsg,
+		"REBIRTH " .. next_rb .. " SUCCESS!\n" ..
+		"Multiplier: x" .. new_mult .. "\n" ..
+		"Slots: " .. new_slots .. " | Storage: " .. new_storage .. "\n" ..
+		"Luck: +x" .. string.format("%.1f", new_luck) .. " from rebirth\n" ..
+		"Bonus: " .. formatNumber(bonus_coins) .. " coins!" .. saved_msg,
 		"success")
-
 	for _, p in pairs(Players:GetPlayers()) do
 		if p ~= player then
-			notifyEvent:FireClient(p,
-				player.Name .. " reached Rebirth " .. nextRebirth .. "! (x" .. newMult .. ")", "info")
+			notifyEvent:FireClient(p, player.Name .. " reached Rebirth " .. next_rb .. "! (x" .. new_mult .. ")", "info")
 		end
 	end
-
-	print("[MoneyManager] " .. player.Name .. " rebirth " .. nextRebirth ..
-		" | mult: x" .. newMult ..
-		" | luck: +" .. newLuck ..
-		" | trophies: " .. showcaseCount ..
-		" | saveAll: " .. tostring(hasSaveAll))
+	print("[MoneyManager] " .. player.Name .. " rebirth " .. next_rb ..
+		" | mult: x" .. new_mult ..
+		" | luck: +"  .. new_luck ..
+		" | trophies: " .. showcase_count ..
+		" | saveAll: "  .. tostring(has_save_all))
 end)
 
--- Rebirth info (called by client UI to populate the rebirth panel)
+-- rebirth info
+
 rebirthInfoEvent.OnServerInvoke = function(player)
 	if not player:FindFirstChild("leaderstats") then return nil end
-
-	local currentRebirth = player.leaderstats.Rebirths.Value
-	local nextRebirth    = currentRebirth + 1
-
-	if nextRebirth > 9 then
+	local current = player.leaderstats.Rebirths.Value
+	local next_rb = current + 1
+	if next_rb > 9 then
 		return {
 			MaxReached     = true,
-			CurrentRebirth = currentRebirth,
-			Multiplier     = getCashMultiplier(currentRebirth),
-			Slots          = getTotalSlots(player, currentRebirth),
-			Storage        = STORAGE_PER_REBIRTH[currentRebirth] or 55,
-			RebirthLuck    = getRebirthLuck(currentRebirth),
+			CurrentRebirth = current,
+			Multiplier     = get_cash_multiplier(current),
+			Slots          = get_total_slots(player, current),
+			Storage        = STORAGE_PER_REBIRTH[current] or 55,
+			RebirthLuck    = get_rebirth_luck(current),
 		}
 	end
-
 	return {
-		MaxReached          = false,
-		CurrentRebirth      = currentRebirth,
-		NextRebirth         = nextRebirth,
-		CoinsCost           = REBIRTH_COINS_COST[nextRebirth]  or 0,
-		BonusCoins          = REBIRTH_BONUS_COINS[nextRebirth] or 0,
-		RequiredCharacters  = REBIRTH_REQUIREMENTS[nextRebirth] and REBIRTH_REQUIREMENTS[nextRebirth].Description or "None",
-		CurrentCoins        = player.leaderstats.Coins.Value,
-		Multiplier          = getCashMultiplier(currentRebirth),
-		NextMultiplier      = getCashMultiplier(nextRebirth),
-		CurrentSlots        = getTotalSlots(player, currentRebirth),
-		NextSlots           = getTotalSlots(player, nextRebirth),
-		CurrentStorage      = STORAGE_PER_REBIRTH[currentRebirth] or 4,
-		NextStorage         = STORAGE_PER_REBIRTH[nextRebirth]    or 4,
-		CurrentRebirthLuck  = getRebirthLuck(currentRebirth),
-		NextRebirthLuck     = getRebirthLuck(nextRebirth),
+		MaxReached         = false,
+		CurrentRebirth     = current,
+		NextRebirth        = next_rb,
+		CoinsCost          = REBIRTH_COINS_COST[next_rb]  or 0,
+		BonusCoins         = REBIRTH_BONUS_COINS[next_rb] or 0,
+		RequiredCharacters = REBIRTH_REQUIREMENTS[next_rb] and REBIRTH_REQUIREMENTS[next_rb].Description or "None",
+		CurrentCoins       = player.leaderstats.Coins.Value,
+		Multiplier         = get_cash_multiplier(current),
+		NextMultiplier     = get_cash_multiplier(next_rb),
+		CurrentSlots       = get_total_slots(player, current),
+		NextSlots          = get_total_slots(player, next_rb),
+		CurrentStorage     = STORAGE_PER_REBIRTH[current] or 4,
+		NextStorage        = STORAGE_PER_REBIRTH[next_rb] or 4,
+		CurrentRebirthLuck = get_rebirth_luck(current),
+		NextRebirthLuck    = get_rebirth_luck(next_rb),
 	}
 end
 
--- Base theme change
-changeThemeEvent.OnServerEvent:Connect(function(player, themeIndex)
-	if not player:FindFirstChild("leaderstats") then return end
-	if type(themeIndex) ~= "number"            then return end
-	if themeIndex < 0 or themeIndex > 8        then return end
-	if player.leaderstats.Rebirths.Value < themeIndex then return end
+-- base theme change
 
-	player:SetAttribute("SelectedBaseTheme", themeIndex)
-	applyBaseColor(player)
-
-	local themeNames = {
+changeThemeEvent.OnServerEvent:Connect(function(player, theme_index)
+	if not player:FindFirstChild("leaderstats")     then return end
+	if type(theme_index) ~= "number"                then return end
+	if theme_index < 0 or theme_index > 8           then return end
+	if player.leaderstats.Rebirths.Value < theme_index then return end
+	player:SetAttribute("SelectedBaseTheme", theme_index)
+	apply_base_color(player)
+	local theme_names = {
 		"Solo Leveling","Black Clover","Hunter x Hunter","Bleach","My Hero Academia",
 		"Attack on Titan","Dragon Ball","Naruto","One Piece",
 	}
-	notifyEvent:FireClient(player, "Base theme: " .. (themeNames[themeIndex + 1] or "Unknown"), "success")
+	notifyEvent:FireClient(player, "Base theme: " .. (theme_names[theme_index + 1] or "Unknown"), "success")
 end)
 
--- Character seen (marks a character as seen in the index even if not owned)
-local seenEvent = ReplicatedStorage:FindFirstChild("CharacterSeenEvent")
-if seenEvent then
-	seenEvent.OnServerEvent:Connect(function(player, charName)
-		if type(charName) ~= "string" or charName == "" then return end
+-- character seen event
 
-		local seenFolder = player:FindFirstChild("SeenCharacters")
-		if not seenFolder then
-			seenFolder        = Instance.new("Folder")
-			seenFolder.Name   = "SeenCharacters"
-			seenFolder.Parent = player
+local seen_event = ReplicatedStorage:FindFirstChild("CharacterSeenEvent")
+if seen_event then
+	seen_event.OnServerEvent:Connect(function(player, char_name)
+		if type(char_name) ~= "string" or char_name == "" then return end
+		local folder = player:FindFirstChild("SeenCharacters")
+		if not folder then
+			folder        = Instance.new("Folder")
+			folder.Name   = "SeenCharacters"
+			folder.Parent = player
 		end
-
-		if not seenFolder:FindFirstChild(charName) then
+		if not folder:FindFirstChild(char_name) then
 			local tag     = Instance.new("BoolValue")
-			tag.Name      = charName
+			tag.Name      = char_name
 			tag.Value     = true
-			tag.Parent    = seenFolder
+			tag.Parent    = folder
 		end
 	end)
 end
 
--- Protect character event (marks a character to survive rebirth without SaveAll)
-local protectCharEvent = createEvent("ProtectCharacterEvent")
+-- protect character event
 
 protectCharEvent.OnServerEvent:Connect(function(player, character, action)
 	if not character or not character.Parent then return end
 	if not character:IsA("BasePart") or character.Name ~= "PlacedCharacter" then return end
-
-	local playerNumber = player:GetAttribute("SpawnerNumber") or 1
-	local parent       = character.Parent
-	local isOwned      = false
-
+	local pn     = player:GetAttribute("SpawnerNumber") or 1
+	local parent = character.Parent
+	local owned  = false
 	if parent.Name:match("^Slot%d+$") then
 		local bp = parent.Parent
-		if bp and bp.Name == "BasePlateau" .. playerNumber then isOwned = true end
+		if bp and bp.Name == "BasePlateau" .. pn then owned = true end
 	end
 	if parent.Name == "Storage" then
 		local inv = parent.Parent
-		if inv and inv.Name == "Inventory" and inv.Parent == player then isOwned = true end
+		if inv and inv.Name == "Inventory" and inv.Parent == player then owned = true end
 	end
-
-	if not isOwned then return end
-
-	local charName = character:GetAttribute("CharacterName") or "Unknown"
-
+	if not owned then return end
+	local char_name = character:GetAttribute("CharacterName") or "Unknown"
 	if action == "protect" then
-		local alreadyProtected  = false
-		local oldProtectedName  = nil
-
-		local bp = getPlayerBasePlateau(player)
+		local already    = false
+		local old_name   = nil
+		local bp = get_base_plateau(player)
 		if bp then
 			for _, slot in pairs(bp:GetChildren()) do
 				if slot.Name:match("^Slot%d+$") then
@@ -1034,14 +884,13 @@ protectCharEvent.OnServerEvent:Connect(function(player, character, action)
 						if child.Name == "PlacedCharacter"
 							and child:GetAttribute("IsProtected") == true
 							and child ~= character then
-							alreadyProtected = true
-							oldProtectedName = child:GetAttribute("CharacterName")
+							already  = true
+							old_name = child:GetAttribute("CharacterName")
 						end
 					end
 				end
 			end
 		end
-
 		local inv = player:FindFirstChild("Inventory")
 		if inv then
 			local stor = inv:FindFirstChild("Storage")
@@ -1050,31 +899,26 @@ protectCharEvent.OnServerEvent:Connect(function(player, character, action)
 					if child:IsA("BasePart")
 						and child:GetAttribute("IsProtected") == true
 						and child ~= character then
-						alreadyProtected = true
-						oldProtectedName = child:GetAttribute("CharacterName")
+						already  = true
+						old_name = child:GetAttribute("CharacterName")
 					end
 				end
 			end
 		end
-
-		if alreadyProtected then
+		if already then
 			notifyEvent:FireClient(player,
-				"Already protecting: " .. (oldProtectedName or "Unknown") .. ". Unprotect it first!", "error")
+				"Already protecting: " .. (old_name or "Unknown") .. ". Unprotect it first!", "error")
 			return
 		end
-
 		character:SetAttribute("IsProtected", true)
-		notifyEvent:FireClient(player, charName .. " is now protected! It will survive rebirth.", "success")
-
+		notifyEvent:FireClient(player, char_name .. " is now protected! It will survive rebirth.", "success")
 	elseif action == "unprotect" then
 		character:SetAttribute("IsProtected", false)
-		notifyEvent:FireClient(player, charName .. " is no longer protected.", "info")
+		notifyEvent:FireClient(player, char_name .. " is no longer protected.", "info")
 	end
 end)
 
--- Index collect event
--- Rewards a luck bonus when a player discovers all characters from one anime series.
-local indexCollectEvent = createEvent("IndexCollectEvent")
+-- index collect event
 
 local INDEX_ANIME_DATA = {
 	["Solo Leveling"]    = {luckBonus=0.3, chars={"Yoo Jin-Ho","Go Gun-Hee","Cha Hae-In","Woo Jin-Chul","Sung Jin-Woo","Beru","Igris","Tank","Architect"}},
@@ -1088,45 +932,35 @@ local INDEX_ANIME_DATA = {
 	["One Piece"]        = {luckBonus=0.5, chars={"Roronoa Zoro","Monkey D. Luffy","Portgas D. Ace","Trafalgar D. Law","Donquixote Doflamingo","Whitebeard","Boa Hancock","Shanks","Enel","Kaido","Monkey D. Luffy Gear 5"}},
 }
 
-indexCollectEvent.OnServerEvent:Connect(function(player, animeName)
-	if type(animeName) ~= "string" then return end
-	local animeInfo = INDEX_ANIME_DATA[animeName]
-	if not animeInfo then return end
-
-	if player:GetAttribute("IndexCollected_" .. animeName) == true then
-		notifyEvent:FireClient(player, "Already collected the " .. animeName .. " index reward!", "error")
+indexCollectEvent.OnServerEvent:Connect(function(player, anime_name)
+	if type(anime_name) ~= "string" then return end
+	local info = INDEX_ANIME_DATA[anime_name]
+	if not info then return end
+	if player:GetAttribute("IndexCollected_" .. anime_name) == true then
+		notifyEvent:FireClient(player, "Already collected the " .. anime_name .. " index reward!", "error")
 		return
 	end
-
-	local discoveredFolder = player:FindFirstChild("DiscoveredCharacters")
-	if not discoveredFolder then return end
-
-	for _, charName in ipairs(animeInfo.chars) do
-		if not discoveredFolder:FindFirstChild(charName) then
-			notifyEvent:FireClient(player, "Haven't completed all " .. animeName .. " characters yet!", "error")
+	local discovered = player:FindFirstChild("DiscoveredCharacters")
+	if not discovered then return end
+	for _, char_name in ipairs(info.chars) do
+		if not discovered:FindFirstChild(char_name) then
+			notifyEvent:FireClient(player, "Haven't completed all " .. anime_name .. " characters yet!", "error")
 			return
 		end
 	end
-
-	player:SetAttribute("IndexCollected_" .. animeName, true)
-	local currentIndexLuck = player:GetAttribute("IndexLuck") or 0
-	player:SetAttribute("IndexLuck", currentIndexLuck + animeInfo.luckBonus)
-
+	player:SetAttribute("IndexCollected_" .. anime_name, true)
+	local current_luck = player:GetAttribute("IndexLuck") or 0
+	player:SetAttribute("IndexLuck", current_luck + info.luckBonus)
 	for _, p in pairs(Players:GetPlayers()) do
 		if p ~= player then
-			notifyEvent:FireClient(p, player.Name .. " completed the " .. animeName .. " Index!", "info")
+			notifyEvent:FireClient(p, player.Name .. " completed the " .. anime_name .. " Index!", "info")
 		end
 	end
-
 	notifyEvent:FireClient(player,
-		animeName .. " INDEX COMPLETE! +x" .. string.format("%.1f", animeInfo.luckBonus) .. " Luck!", "success")
-
-	print("[MoneyManager] " .. player.Name .. " completed " .. animeName
-		.. " index | IndexLuck now: " .. (currentIndexLuck + animeInfo.luckBonus))
+		anime_name .. " INDEX COMPLETE! +x" .. string.format("%.1f", info.luckBonus) .. " Luck!", "success")
+	print("[MoneyManager] " .. player.Name .. " completed " .. anime_name
+		.. " index | IndexLuck now: " .. (current_luck + info.luckBonus))
 end)
 
--- ServerLuck is initialized here; all updates go through recalculatePersonalLuck -> updateServerLuck.
--- There is no separate polling loop to avoid two systems overwriting each other.
 workspace:SetAttribute("ServerLuck", 1)
-
-print("[MoneyManager] Loaded")
+print("[MoneyManager] loaded")
