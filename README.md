@@ -6,7 +6,7 @@ This project was built to practice large-scale gameplay systems, server authorit
 
 ## Features
 
-- handles player economy and passive income
+- handles player economy and passive income systems
 - rebirth system with scaling rewards and requirements
 - server luck calculation and multipliers
 - inventory and storage slot management
